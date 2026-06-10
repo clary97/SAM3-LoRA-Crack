@@ -72,3 +72,8 @@ Thumbs.db
 *.tmp
 *.temp
 .hf_home/
+
+# Archives / sample-dataset artifacts (untracked, kept locally)
+*.zip
+README.dataset.txt
+README.roboflow.txt

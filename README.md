@@ -18,6 +18,10 @@
 
 Fine-tune the SAM3 (Segment Anything Model 3) using **LoRA (Low-Rank Adaptation)** - a parameter-efficient method that reduces trainable parameters from 100% to ~1% while maintaining performance.
 
+> **Attribution**
+> This project is based on [SAM3_LoRA](https://github.com/Sompote/SAM3_LoRA) by Sompote:
+> https://github.com/Sompote/SAM3_LoRA
+
 ### Recent Updates
 
 **2026-02-03**:
@@ -62,7 +66,7 @@ W' = W_frozen + B×A  (where rank << model_dim)
 SAM3-LoRA applies Low-Rank Adaptation to key components of the SAM3 architecture:
 
 <div align="center">
-<img src="asset/Screenshot 2568-12-06 at 07.00.16.png" alt="SAM3 Architecture with LoRA" width="900">
+<img src="assets/Screenshot 2568-12-06 at 07.00.16.png" alt="SAM3 Architecture with LoRA" width="900">
 <br>
 <em>SAM3 Model Architecture with Full LoRA Adaptation</em>
 </div>
@@ -156,7 +160,7 @@ If you see errors, review the [Troubleshooting](#troubleshooting) section.
 **Example Result**: Train a model to detect concrete cracks with just ~1% trainable parameters!
 
 <div align="center">
-<img src="asset/output.png" alt="Example: Concrete Crack Detection" width="600">
+<img src="assets/output.png" alt="Example: Concrete Crack Detection" width="600">
 <br>
 <em>Detection: "concrete crack" with 0.32 confidence • Precise segmentation mask</em>
 </div>
@@ -877,7 +881,7 @@ lora:
 SAM3-LoRA excels at detecting structural defects like cracks in concrete. Here's a real example:
 
 <div align="center">
-<img src="asset/output.png" alt="Concrete Crack Detection" width="800">
+<img src="assets/output.png" alt="Concrete Crack Detection" width="800">
 </div>
 
 **Detection Results:**
@@ -921,7 +925,7 @@ We evaluated the fine-tuned SAM3-LoRA model on pothole detection, comparing it a
 ### Validation Metrics Comparison
 
 <div align="center">
-<img src="asset/Screenshot 2568-12-10 at 08.20.20.png" alt="Validation Metrics" width="800">
+<img src="assets/Screenshot 2568-12-10 at 08.20.20.png" alt="Validation Metrics" width="800">
 <br>
 <em>Validation performance: LoRA fine-tuned model vs Base SAM3 model</em>
 </div>
@@ -936,7 +940,7 @@ We evaluated the fine-tuned SAM3-LoRA model on pothole detection, comparing it a
 ### Visual Comparison
 
 <div align="center">
-<img src="asset/combined_comparison_all.jpg" alt="Visual Comparison" width="900">
+<img src="assets/combined_comparison_all.jpg" alt="Visual Comparison" width="900">
 <br>
 <em>Side-by-side comparison: Ground Truth (Green) | LoRA Model (Red) | Base Model (Blue)</em>
 </div>
@@ -1197,35 +1201,69 @@ load_lora_weights(model, "my_lora_weights.pt")
 ## Project Structure
 
 ```
-sam3_lora/
-├── configs/
-│   └── full_lora_config.yaml      # Default training config
-├── data/                          # COCO format dataset
-│   ├── train/
-│   │   ├── img001.jpg             # Training images
-│   │   ├── img002.jpg
-│   │   └── _annotations.coco.json # COCO annotations
-│   ├── valid/
-│   │   ├── img001.jpg             # Validation images
-│   │   ├── img002.jpg
-│   │   └── _annotations.coco.json # COCO annotations
-│   └── test/
-│       ├── img001.jpg             # Test images (optional)
-│       └── _annotations.coco.json # COCO annotations
-├── outputs/
-│   └── sam3_lora_full/
-│       ├── best_lora_weights.pt   # Best model (lowest val loss)
-│       └── last_lora_weights.pt   # Last epoch model
-├── sam3/                          # SAM3 model library
-├── lora_layers.py                 # LoRA implementation
-├── train_sam3_lora_native.py      # Training script (computes validation loss only)
-├── validate_sam3_lora.py          # Full evaluation script (mAP, cgF1, NMS)
-├── validate_single_image.py       # Single image validation with visualization
-├── infer_sam.py                   # Inference script (recommended)
-├── inference_lora.py              # Legacy inference script
-├── README_INFERENCE.md            # Detailed inference guide
-└── README.md                      # This file
+SAM3_LoRA_Crack/
+├── README.md                       # This file
+├── requirements.txt
+├── setup.py
+├── sam3/                           # Vendored SAM3 model library (imported as `sam3`)
+│
+├── lora_layers.py                  # Core LoRA implementation (imported by the scripts below)
+│
+├── Training & evaluation (run from repo root):
+│   ├── train_sam3_lora_native.py       # Main trainer (computes validation loss only)
+│   ├── train_sam3_lora.py              # Alternative trainer
+│   ├── train_sam3_lora_with_categories.py  # Multi-category trainer
+│   └── validate_sam3_lora.py           # Full evaluation (mAP, cgF1, NMS)
+│
+├── Inference & comparison:
+│   ├── infer_sam.py                    # Inference (recommended)
+│   ├── inference_lora.py               # LoRA inference
+│   ├── inference.py                    # Minimal inference
+│   ├── compare_lora_base.py            # Compare LoRA vs base model
+│   └── compare_lora_base_batch.py      # Batch comparison
+│
+├── Data preparation & utilities:
+│   ├── prepare_crack_coco.py           # Crack image/mask pairs -> COCO ("crack" prompt)
+│   ├── prepare_data.py                 # Generic data-prep helpers
+│   ├── prepare_data_split.py
+│   ├── convert_roboflow_to_coco.py     # Roboflow -> COCO
+│   ├── analyze_loss.py                 # Loss-curve analysis
+│   ├── check_text_encoding.py
+│   └── verify_gt_transforms.py
+│
+├── configs/                        # All YAML training configs
+│   ├── crack_lora_config.yaml          # Crack LoRA config (prompt = "crack")
+│   ├── full_lora_config.yaml           # Default: LoRA on all components
+│   ├── base_config.yaml
+│   ├── crack_detection_config.yaml
+│   ├── light_lora_config.yaml
+│   └── minimal_lora_config.yaml
+│
+├── docs/                           # Guides and notes
+│   ├── CLI_TRAINING_GUIDE.md
+│   ├── LORA_IMPLEMENTATION_GUIDE.md
+│   ├── README_INFERENCE.md
+│   ├── README_LORA_IMPLEMENTATION.md
+│   ├── PROJECT_SUMMARY.md
+│   ├── QUICK_SUMMARY.md
+│   ├── PROJECT_STRUCTURE.txt
+│   └── diagnose_training.md
+│
+├── assets/                         # Screenshots and sample outputs (README images)
+│
+└── legacy/                         # Archived demo/duplicate code (not used by main pipeline)
+    ├── src/                            # Early standalone LoRA package
+    ├── sam3_lora/                      # Standalone demo package
+    ├── sam3_lora_configs/
+    ├── train.py, train_simple.py, train_standalone.py, train_native.py
+    └── test_lora_injection.py, test_aux_outputs.py
+
+# Created at runtime (git-ignored): data/, outputs/, logs/
 ```
+
+> **Note**: The training/inference scripts and `lora_layers.py` are kept at the repository
+> root on purpose — they `import sam3` / `import lora_layers` and read configs via the
+> relative path `configs/...`, so they are meant to be run from the repo root.
 
 ---
 
