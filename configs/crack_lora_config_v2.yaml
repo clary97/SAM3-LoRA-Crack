@@ -46,7 +46,7 @@ training:
   adam_epsilon: 1e-8
   max_grad_norm: 1.0
 
-  num_epochs: 8 # 30
+  num_epochs: 6
   warmup_steps: 200
   lr_scheduler: "cosine"
 
@@ -59,9 +59,16 @@ training:
   seed: 42
   gradient_accumulation_steps: 8   # effective batch = 2 x 8 = 16
 
+# Experiment #1: push mask-boundary quality (mAP@75 / IoU).
+# Dice loss directly optimizes mask overlap, so it is raised relative to v1.
+# (train_sam3_lora_native.py reads these; omitting falls back to mask=200, dice=10.)
+loss:
+  loss_mask: 250.0   # v1: 200
+  loss_dice: 30.0    # v1: 10  -> stronger overlap/boundary pressure
+
 output:
-  output_dir: "outputs/crack_lora"
-  logging_dir: "logs/crack_lora"
+  output_dir: "outputs/crack_lora_v2"
+  logging_dir: "logs/crack_lora_v2"
   save_lora_only: true
   push_to_hub: false
   hub_model_id: null

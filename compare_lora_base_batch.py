@@ -188,7 +188,8 @@ def load_ground_truth(image_path, data_dir):
     image_name = image_path.name
     image_info = None
     for img in coco_data['images']:
-        if img['file_name'] == image_name:
+        # COCO file_name may be an absolute path; match on basename
+        if Path(img['file_name']).name == image_name:
             image_info = img
             break
 

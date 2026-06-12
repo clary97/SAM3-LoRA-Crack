@@ -15,6 +15,8 @@ from tqdm import tqdm
 from pathlib import Path
 import numpy as np
 from PIL import Image as PILImage
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True  # tolerate truncated source images
 import contextlib
 
 # SAM3 Imports

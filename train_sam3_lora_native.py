@@ -34,6 +34,10 @@ from tqdm import tqdm
 from pathlib import Path
 import numpy as np
 from PIL import Image as PILImage
+from PIL import ImageFile
+# Tolerate truncated/partially-corrupt source images instead of crashing the
+# whole run (e.g. CCSD rgb/593.JPG). PIL fills the missing bytes with gray.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 import contextlib
 
 # Distributed training imports
@@ -857,8 +861,10 @@ class SAM3TrainerNative:
             ),
             Masks(
                 weight_dict={
-                    "loss_mask": 200.0,  # Much higher weight for mask loss!
-                    "loss_dice": 10.0
+                    # Configurable via the optional `loss:` section in the YAML
+                    # config (defaults preserve the original behaviour).
+                    "loss_mask": float(self.config.get("loss", {}).get("loss_mask", 200.0)),
+                    "loss_dice": float(self.config.get("loss", {}).get("loss_dice", 10.0))
                 },
                 focal_alpha=0.25,
                 focal_gamma=2.0,
