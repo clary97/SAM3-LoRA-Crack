@@ -113,15 +113,18 @@ def print_rank0(*args, **kwargs):
 
 class COCOSegmentDataset(Dataset):
     """Dataset class for COCO format segmentation data"""
-    def __init__(self, data_dir, split="train"):
+    def __init__(self, data_dir, split="train", augment=False):
         """
         Args:
             data_dir: Root directory containing train/valid/test folders
             split: One of 'train', 'valid', 'test'
+            augment: Enable train-time augmentation (h/v flip + brightness/contrast).
+                     Geometric flips are applied consistently to image, boxes and masks.
         """
         self.data_dir = Path(data_dir)
         self.split = split
         self.split_dir = self.data_dir / split
+        self.augment = augment
 
         # Load COCO annotations
         ann_file = self.split_dir / "_annotations.coco.json"
@@ -175,6 +178,20 @@ class COCOSegmentDataset(Dataset):
         # Transform to tensor
         image_tensor = self.transform(pil_image)
 
+        # --- Augmentation (train only): decide params once, apply consistently ---
+        do_hflip = do_vflip = False
+        if self.augment:
+            do_hflip = torch.rand(1).item() < 0.5
+            do_vflip = torch.rand(1).item() < 0.5
+            if do_hflip:
+                image_tensor = torch.flip(image_tensor, dims=[2])  # width
+            if do_vflip:
+                image_tensor = torch.flip(image_tensor, dims=[1])  # height
+            # Photometric jitter on the normalized tensor (geometry-preserving)
+            brightness = (torch.rand(1).item() - 0.5) * 0.2   # +/-0.1
+            contrast = 1.0 + (torch.rand(1).item() - 0.5) * 0.2  # 0.9..1.1
+            image_tensor = (image_tensor * contrast + brightness).clamp(-1.5, 1.5)
+
         # Get annotations for this image
         annotations = self.img_to_anns.get(img_id, [])
 
@@ -210,6 +227,12 @@ class COCOSegmentDataset(Dataset):
                 h * scale_h / self.resolution,
             ], dtype=torch.float32)
 
+            # Mirror box center to match a flipped image
+            if do_hflip:
+                box_tensor[0] = 1.0 - box_tensor[0]
+            if do_vflip:
+                box_tensor[1] = 1.0 - box_tensor[1]
+
             # Handle segmentation mask (polygon or RLE format)
             segment = None
             segmentation = ann.get("segmentation", None)
@@ -239,6 +262,12 @@ class COCOSegmentDataset(Dataset):
                         mode="nearest"
                     )
                     segment = mask_t.squeeze() > 0.5  # [1008, 1008] boolean tensor
+
+                    # Match flips applied to the image
+                    if do_hflip:
+                        segment = torch.flip(segment, dims=[1])
+                    if do_vflip:
+                        segment = torch.flip(segment, dims=[0])
 
                 except Exception as e:
                     print(f"Warning: Error processing mask for image {img_id}, ann {i}: {e}")
@@ -895,8 +924,9 @@ class SAM3TrainerNative:
         data_dir = self.config["training"]["data_dir"]
 
         # Load datasets using COCO format
-        print_rank0(f"\nLoading training data from {data_dir}...")
-        train_ds = COCOSegmentDataset(data_dir=data_dir, split="train")
+        augment = bool(self.config["training"].get("augment", False))
+        print_rank0(f"\nLoading training data from {data_dir}... (augment={augment})")
+        train_ds = COCOSegmentDataset(data_dir=data_dir, split="train", augment=augment)
 
         # Check if validation data exists
         has_validation = False

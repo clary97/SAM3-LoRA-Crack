@@ -38,6 +38,11 @@ All metrics below are on the held-out **test** split (989 images).
 | **Base** | Zero-shot SAM3, no LoRA | — | — | — |
 | **v1** | LoRA, default loss | 200 / 10 | epoch 2 | `outputs/crack_lora/` |
 | **v2** | LoRA, stronger Dice (exp #1) | 250 / 30 | epoch 3 | `outputs/crack_lora_v2/` |
+| **v3** | v2 + data augmentation (exp #2, *in progress*) | 250 / 30 | — | `outputs/crack_lora_v3/` |
+
+v3 adds train-time augmentation (random horizontal/vertical flip applied
+consistently to image+boxes+masks, plus brightness/contrast jitter), enabled via
+`training.augment: true` in `configs/crack_lora_config_v3.yaml`.
 
 Only the loss weights differ between v1 and v2; model, data, and all other
 hyperparameters are identical. Dice loss directly optimizes mask overlap, so it
@@ -69,6 +74,26 @@ Lowering the threshold to 0.2 barely changed recall (+0.004) but cost precision
 (−0.07) and F1 (−0.017). The missed cracks are missed outright, not merely
 low-confidence — so threshold tuning cannot recover them. **0.3 is the better
 operating point.**
+
+### Per-dataset breakdown (v2, threshold 0.3)
+
+From `evaluate_pixel_metrics.py --by-source` (`pixel_metrics_by_source.json`):
+
+| dataset | imgs | IoU | Precision | Recall | F1 |
+|---|---|---|---|---|---|
+| BCL_NonSteel | 576 | 0.611 | 0.793 | 0.782 | 0.788 |
+| BCL_Steel | 203 | 0.571 | 0.649 | 0.778 | 0.708 |
+| NCCD | 71 | 0.578 | 0.753 | 0.744 | 0.749 |
+| CCSD | 44 | 0.323 | 0.810 | 0.360 | 0.499 |
+| LCW | 95 | 0.174 | 0.281 | 0.401 | 0.330 |
+
+- **BCL + NCCD (850/989 images) are already strong** (F1 0.71–0.79).
+- **CCSD**: high precision (0.81), low recall (0.36) — thin cracks lost when the
+  huge images (3264×2448) are downscaled to 1008 → **tiling** is the targeted fix.
+- **LCW** is weak on *every* metric (F1 0.33) → likely a domain / annotation-quality
+  problem, not just resolution; needs visual inspection.
+- The low overall micro-recall (0.44) is dominated by CCSD/LCW (very large images);
+  most images (BCL/NCCD) reach recall ~0.75.
 
 ## Results — COCO detection metrics (segm)
 
