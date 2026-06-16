@@ -1,0 +1,84 @@
+# SAM3 LoRA config for crack segmentation (prompt fixed to "crack").
+# Data is built by prepare_crack_coco.py (image/mask pairs -> COCO, category "crack").
+# Consumed by train_sam3_lora_native.py.
+
+model:
+  name: "facebook/sam3"
+  cache_dir: null
+
+lora:
+  rank: 16
+  alpha: 32                  # 2x rank
+  dropout: 0.1
+
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "out_proj"
+    - "qkv"                  # vision backbone fused QKV
+    - "proj"                 # vision backbone attn out
+    - "fc1"                  # vision backbone MLP
+    - "fc2"
+    - "c_fc"                 # text backbone MLP
+    - "c_proj"
+    - "linear1"              # DETR FFN
+    - "linear2"
+
+  # Vision + text + mask decoder are what matter for "text prompt -> mask".
+  # DETR enc/dec on for detection quality. Geometry encoder off (no box prompts).
+  apply_to_vision_encoder: true
+  apply_to_text_encoder: true
+  apply_to_geometry_encoder: false
+  apply_to_detr_encoder: true
+  apply_to_detr_decoder: true
+  apply_to_mask_decoder: true
+
+training:
+  data_dir: "/workspace/nas_200/minkyung/crack_tiles"  # holds train/valid/test/_annotations.coco.json
+  batch_size: 2          # 1008x1008 ViT is heavy; raise if GPU memory allows
+  num_workers: 4
+
+  learning_rate: 5e-5
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1e-8
+  max_grad_norm: 1.0
+
+  num_epochs: 5
+  warmup_steps: 200
+  lr_scheduler: "cosine"
+
+  logging_steps: 20
+  eval_steps: 200
+  save_steps: 500
+  save_total_limit: 5
+
+  mixed_precision: "bf16"
+  seed: 42
+  gradient_accumulation_steps: 8   # effective batch = 2 x 8 = 16
+
+# Experiment #1: push mask-boundary quality (mAP@75 / IoU).
+# Dice loss directly optimizes mask overlap, so it is raised relative to v1.
+# (train_sam3_lora_native.py reads these; omitting falls back to mask=200, dice=10.)
+loss:
+  loss_mask: 250.0   # v1: 200
+  loss_dice: 30.0    # v1: 10  -> stronger overlap/boundary pressure
+
+output:
+  output_dir: "outputs/crack_lora_v4"
+  logging_dir: "logs/crack_lora_v4"
+  save_lora_only: true
+  push_to_hub: false
+  hub_model_id: null
+
+evaluation:
+  metric: "iou"
+  save_predictions: false
+  compute_metrics_during_training: true
+
+hardware:
+  device: "cuda"
+  dataloader_pin_memory: true
+  use_compile: false
