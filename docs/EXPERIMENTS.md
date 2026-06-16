@@ -38,7 +38,7 @@ All metrics below are on the held-out **test** split (989 images).
 | **Base** | Zero-shot SAM3, no LoRA | — | — | — |
 | **v1** | LoRA, default loss | 200 / 10 | epoch 2 | `outputs/crack_lora/` |
 | **v2** | LoRA, stronger Dice (exp #1) | 250 / 30 | epoch 3 | `outputs/crack_lora_v2/` |
-| **v3** | v2 + data augmentation (exp #2, *in progress*) | 250 / 30 | — | `outputs/crack_lora_v3/` |
+| **v3** | v2 + data augmentation (exp #2) | 250 / 30 | epoch 6 | `outputs/crack_lora_v3/` |
 
 v3 adds train-time augmentation (random horizontal/vertical flip applied
 consistently to image+boxes+masks, plus brightness/contrast jitter), enabled via
@@ -61,7 +61,12 @@ threshold 0.3 unless noted. IoU = mean per-image IoU.
 |---|---|---|---|---|---|
 | Base (zero-shot) | 0.406 | 0.232 | 0.306 | 0.492 | 0.377 |
 | v1 (dice 10) | 0.533 | 0.286 | 0.461 | 0.430 | 0.445 |
-| **v2 (dice 30)** ⭐ | **0.546** | **0.383** | **0.758** | 0.436 | **0.554** |
+| **v2 (dice 30)** | 0.546 | **0.383** | **0.758** | 0.436 | **0.554** |
+| v3 (v2 + augment) | **0.553** | 0.312 | 0.498 | **0.455** | 0.475 |
+
+The overall micro/F1 drop for v3 is a **CCSD artifact** — see the augmentation
+comparison below. By image-averaged IoU (which weights every image equally) v3 is
+the best config; by pixel-pooled F1, CCSD's huge images dominate and drag it down.
 
 ### Threshold study (v2)
 
@@ -94,6 +99,27 @@ From `evaluate_pixel_metrics.py --by-source` (`pixel_metrics_by_source.json`):
   problem, not just resolution; needs visual inspection.
 - The low overall micro-recall (0.44) is dominated by CCSD/LCW (very large images);
   most images (BCL/NCCD) reach recall ~0.75.
+
+### Augmentation effect — v2 vs v3 per-dataset F1 (threshold 0.3)
+
+From `pixel_metrics_by_source.json` (v2) and `pixel_metrics_v3_by_source.json` (v3):
+
+| dataset | imgs | v2 F1 | v3 F1 | Δ |
+|---|---|---|---|---|
+| BCL_NonSteel | 576 | 0.788 | 0.799 | +0.011 |
+| BCL_Steel | 203 | 0.708 | 0.764 | +0.057 |
+| NCCD | 71 | 0.749 | 0.775 | +0.027 |
+| LCW | 95 | 0.330 | 0.357 | +0.027 |
+| **CCSD** | 44 | 0.499 | 0.403 | **−0.096** |
+
+- Augmentation **improved 4 of 5 datasets** (recall rose without hurting precision
+  on BCL/NCCD) and lifted image-averaged IoU (0.546 → 0.553).
+- **CCSD regressed**: precision collapsed 0.81 → 0.43. Augmentation added false
+  positives on its huge, low-contrast images — confirming that CCSD needs
+  **tiling** (resolution), not more augmentation.
+- LCW barely moved (still F1 ≈ 0.36) → not an augmentation/resolution issue.
+- **Recommended model: v3** for the general/BCL/NCCD case; keep v2 (or tile) for
+  CCSD-style high-resolution inputs.
 
 ## Results — COCO detection metrics (segm)
 
