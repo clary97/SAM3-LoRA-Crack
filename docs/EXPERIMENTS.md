@@ -39,6 +39,14 @@ All metrics below are on the held-out **test** split (989 images).
 | **v1** | LoRA, default loss | 200 / 10 | epoch 2 | `outputs/crack_lora/` |
 | **v2** | LoRA, stronger Dice (exp #1) | 250 / 30 | epoch 3 | `outputs/crack_lora_v2/` |
 | **v3** | v2 + data augmentation (exp #2) | 250 / 30 | epoch 6 | `outputs/crack_lora_v3/` |
+| **v4** | v2 + tiling of CCSD/LCW (exp #3) | 250 / 30 | epoch 4 | `outputs/crack_lora_v4/` |
+
+v4 (exp #3) tiles the high-resolution CCSD and wide-scene LCW images into
+512×512 crops (`prepare_crack_tiles.py` → `crack_tiles/`), keeping only tiles that
+contain crack pixels; BCL/NCCD stay whole. Augmentation is off, to isolate the
+tiling effect against v2. Evaluated with a stitched full-image eval
+(`evaluate_tiled.py`): each test image is covered with tiles, predictions are
+OR-stitched back to full resolution, then scored like the other runs.
 
 v3 adds train-time augmentation (random horizontal/vertical flip applied
 consistently to image+boxes+masks, plus brightness/contrast jitter), enabled via
@@ -131,9 +139,43 @@ Measured with [`validate_sam3_lora.py`](../validate_sam3_lora.py) `--merge`.
 | Base | 0.130 | 0.335 | 0.070 | 0.341 |
 | v1 | 0.190 | 0.526 | 0.093 | 0.624 |
 
+### Tiling effect — exp #3 (v4), stitched eval, threshold 0.3
+
+`evaluate_tiled.py` (`pixel_metrics_v4_tiled.json`). Overall and on the tiling
+targets (CCSD, LCW):
+
+| scope | metric | v2 | v4 (tiled) | Δ |
+|---|---|---|---|---|
+| overall | IoU / P / R / F1 | 0.546 / 0.758 / 0.436 / 0.554 | 0.543 / 0.366 / **0.485** / 0.417 | recall ↑, F1 ↓ |
+| CCSD | Recall | 0.360 | **0.414** | +0.05 |
+| CCSD | Precision | **0.810** | 0.303 | **−0.51** |
+| CCSD | F1 | **0.499** | 0.350 | −0.15 |
+| LCW | Recall | 0.401 | **0.461** | +0.06 |
+| LCW | Precision | 0.281 | 0.229 | −0.05 |
+| LCW | F1 | 0.330 | 0.306 | −0.02 |
+
+**Tiling raised recall on both targets (its goal) but precision collapsed on CCSD
+(0.81 → 0.30), so net F1/IoU got worse.** Tiling itself was not the problem — the
+training/inference setup was inconsistent:
+
+> **The positive-only-tile limitation.** Training kept only tiles that *contain*
+> crack pixels, so the model never saw crack-free background tiles and never
+> learned to output "nothing" on them. At inference the full image is covered by
+> *all* tiles, including the many background ones — there the model hallucinates
+> cracks, and OR-stitching accumulates these false positives across tiles →
+> precision collapse (worst on CCSD, which produces the most tiles per image).
+
+To make tiling pay off, training must include **negative (crack-free) tiles** so
+the model learns to reject background (exp #5 candidate), and/or inference must
+gate background tiles (raise the score threshold, or use an image-level
+crack-presence check before accepting tile predictions).
+
 ## Conclusions
 
 - LoRA clearly beats zero-shot SAM3 on every metric.
+- **Experiment #3 (tiling, v4) did not pay off as implemented**: recall rose on
+  CCSD/LCW but precision collapsed because the model was trained on positive tiles
+  only and over-predicts on background tiles at inference. Needs negative tiles.
 - **Experiment #1 (Dice 10 → 30) succeeded**: precision jumped 0.46 → 0.76 with
   recall held flat, lifting F1 0.445 → 0.554 and micro-IoU 0.286 → 0.383. The
   model became much more precise (far fewer false-positive crack pixels).
