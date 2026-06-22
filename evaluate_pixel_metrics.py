@@ -50,23 +50,50 @@ def source_of(file_name):
     return "OTHER"
 
 
-def _metrics(tp, fp, fn, ious, n):
+def _metrics(tp, fp, fn, ious, n, rel=None):
     prec = tp / (tp + fp) if (tp + fp) else 0.0
     rec = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
-    return {
+    out = {
         "images": n,
         "mean_per_image_IoU": float(np.mean(ious)) if ious else 0.0,
         "micro_IoU": tp / (tp + fp + fn) if (tp + fp + fn) else 0.0,
         "Precision": prec, "Recall": rec, "F1": f1,
         "Dice": 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else 0.0,
     }
+    if rel is not None:  # rel = (rprec_list, rrec_list, cldice_list)
+        rp = float(np.mean(rel[0])) if rel[0] else 0.0
+        rr = float(np.mean(rel[1])) if rel[1] else 0.0
+        out["relaxed_Precision"] = rp
+        out["relaxed_Recall"] = rr
+        out["relaxed_F1"] = 2 * rp * rr / (rp + rr) if (rp + rr) else 0.0
+        out["clDice"] = float(np.mean(rel[2])) if rel[2] else 0.0
+    return out
 
 
-def evaluate(model, images, data_dir, threshold, device, label, by_source=False):
+def relaxed_and_cldice(gt, pred, tol=2):
+    """Boundary-tolerant precision/recall (±tol px) and clDice for one image."""
+    from scipy import ndimage as ndi
+    from skimage.morphology import skeletonize
+    gp, pp = gt.sum(), pred.sum()
+    gt_d = ndi.binary_dilation(gt, iterations=tol) if tol > 0 else gt
+    pred_d = ndi.binary_dilation(pred, iterations=tol) if tol > 0 else pred
+    rprec = (pred & gt_d).sum() / pp if pp > 0 else (1.0 if gp == 0 else 0.0)
+    rrec = (gt & pred_d).sum() / gp if gp > 0 else (1.0 if pp == 0 else 0.0)
+    sp = skeletonize(pred) if pp > 0 else pred
+    st = skeletonize(gt) if gp > 0 else gt
+    tprec = (sp & gt_d).sum() / sp.sum() if sp.sum() > 0 else (1.0 if gp == 0 else 0.0)
+    tsens = (st & pred_d).sum() / st.sum() if st.sum() > 0 else (1.0 if pp == 0 else 0.0)
+    cldice = 2 * tprec * tsens / (tprec + tsens) if (tprec + tsens) > 0 else 0.0
+    return float(rprec), float(rrec), float(cldice)
+
+
+def evaluate(model, images, data_dir, threshold, device, label, by_source=False,
+             relaxed=False, tol=2):
     tp = fp = fn = 0
     ious = []
-    grp = {}  # source -> [tp, fp, fn, [ious]]
+    rel = ([], [], [])              # rprec, rrec, cldice (overall)
+    grp = {}                        # source -> [tp, fp, fn, [ious], rprec, rrec, cldice]
     for im in tqdm(images, desc=label):
         path = im["file_name"]
         H, W = im["height"], im["width"]
@@ -83,15 +110,23 @@ def evaluate(model, images, data_dir, threshold, device, label, by_source=False)
         i_fn = int(np.logical_and(gt, ~pred).sum())
         ious.append(i_iou); tp += inter; fp += i_fp; fn += i_fn
 
+        r = relaxed_and_cldice(gt, pred, tol) if relaxed else None
+        if r:
+            rel[0].append(r[0]); rel[1].append(r[1]); rel[2].append(r[2])
+
         if by_source:
             s = source_of(path)
-            g = grp.setdefault(s, [0, 0, 0, []])
+            g = grp.setdefault(s, [0, 0, 0, [], [], [], []])
             g[0] += inter; g[1] += i_fp; g[2] += i_fn; g[3].append(i_iou)
+            if r:
+                g[4].append(r[0]); g[5].append(r[1]); g[6].append(r[2])
 
-    out = {"label": label, "threshold": threshold, **_metrics(tp, fp, fn, ious, len(images))}
+    out = {"label": label, "threshold": threshold,
+           **_metrics(tp, fp, fn, ious, len(images), (rel if relaxed else None))}
     if by_source:
         out["by_source"] = {
-            s: _metrics(g[0], g[1], g[2], g[3], len(g[3]))
+            s: _metrics(g[0], g[1], g[2], g[3], len(g[3]),
+                        ((g[4], g[5], g[6]) if relaxed else None))
             for s, g in sorted(grp.items(), key=lambda kv: -len(kv[1][3]))
         }
     return out
@@ -108,6 +143,9 @@ def main():
                     help="Also report metrics broken down per source dataset")
     ap.add_argument("--skip-base", action="store_true",
                     help="Evaluate only the LoRA model (skip the base SAM3 baseline)")
+    ap.add_argument("--relaxed", action="store_true",
+                    help="Also report boundary-tolerant Precision/Recall/F1 and clDice")
+    ap.add_argument("--tol", type=int, default=2, help="Tolerance in px for --relaxed")
     ap.add_argument("--out", default="pixel_metrics.json", help="Output JSON path")
     args = ap.parse_args()
 
@@ -118,32 +156,43 @@ def main():
         images = images[: args.num_samples]
 
     def row(label, m):
-        return (f"{label:13s} {m['images']:5d} {m['mean_per_image_IoU']:8.4f} "
+        base = (f"{label:13s} {m['images']:5d} {m['mean_per_image_IoU']:8.4f} "
                 f"{m['micro_IoU']:9.4f} {m['Precision']:7.4f} {m['Recall']:7.4f} "
                 f"{m['F1']:7.4f} {m['Dice']:7.4f}")
+        if args.relaxed and "relaxed_F1" in m:
+            base += (f"  | {m['relaxed_Precision']:7.4f} {m['relaxed_Recall']:7.4f} "
+                     f"{m['relaxed_F1']:7.4f} {m['clDice']:7.4f}")
+        return base
 
     results = []
     print("\n=== Evaluating LoRA model ===")
     lora = load_lora_model(args.config, args.weights, device)
-    results.append(evaluate(lora, images, args.data_dir, args.threshold, device, "LoRA", args.by_source))
+    results.append(evaluate(lora, images, args.data_dir, args.threshold, device, "LoRA",
+                            args.by_source, args.relaxed, args.tol))
     del lora
     torch.cuda.empty_cache()
 
     if not args.skip_base:
         print("\n=== Evaluating Base model ===")
         base = load_base_model(device)
-        results.append(evaluate(base, images, args.data_dir, args.threshold, device, "Base", args.by_source))
+        results.append(evaluate(base, images, args.data_dir, args.threshold, device, "Base",
+                                args.by_source, args.relaxed, args.tol))
 
-    print("\n" + "=" * 78)
+    print("\n" + "=" * 96)
     print(f"PIXEL-LEVEL CRACK SEGMENTATION METRICS (test={len(images)}, thr={args.threshold})")
-    print("=" * 78)
-    print(f"{'group':13s} {'imgs':>5s} {'meanIoU':>8s} {'microIoU':>9s} {'Prec':>7s} {'Recall':>7s} {'F1':>7s} {'Dice':>7s}")
+    if args.relaxed:
+        print(f"strict: IoU/Prec/Recall/F1/Dice   |   relaxed (+-{args.tol}px): rPrec rRecall rF1 clDice")
+    print("=" * 96)
+    hdr = f"{'group':13s} {'imgs':>5s} {'meanIoU':>8s} {'microIoU':>9s} {'Prec':>7s} {'Recall':>7s} {'F1':>7s} {'Dice':>7s}"
+    if args.relaxed:
+        hdr += "  | " + f"{'rPrec':>7s} {'rRecall':>7s} {'rF1':>7s} {'clDice':>7s}"
+    print(hdr)
     for r in results:
         print(row(r["label"], r))
         if "by_source" in r:
             for s, m in r["by_source"].items():
                 print(row(f"  {s}", m))
-    print("=" * 78)
+    print("=" * 96)
     with open(args.out, "w") as f:
         json.dump(results, f, indent=2)
     print(f"Saved {args.out}")

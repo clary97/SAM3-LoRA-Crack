@@ -794,6 +794,29 @@ def create_coco_gt_from_dataset_original_res(dataset, image_ids=None, debug=Fals
     return coco_gt
 
 
+def _build_mask_loss(loss_cfg):
+    """Build the mask loss from the optional `loss:` config section.
+
+    Defaults reproduce the original behaviour (mask=200, dice=10, no clDice).
+    If `loss_cldice` > 0 is given, use MasksClDice (topology-aware, for thin
+    cracks) which adds a centerline-Dice term.
+    """
+    weight_dict = {
+        "loss_mask": float(loss_cfg.get("loss_mask", 200.0)),
+        "loss_dice": float(loss_cfg.get("loss_dice", 10.0)),
+    }
+    cldice_w = float(loss_cfg.get("loss_cldice", 0.0))
+    if cldice_w > 0:
+        from crack_losses import MasksClDice
+        weight_dict["loss_cldice"] = cldice_w
+        print_rank0(f"Using MasksClDice loss (weights: {weight_dict})")
+        return MasksClDice(weight_dict=weight_dict, focal_alpha=0.25,
+                           focal_gamma=2.0, compute_aux=False,
+                           cldice_iters=int(loss_cfg.get("cldice_iters", 10)))
+    return Masks(weight_dict=weight_dict, focal_alpha=0.25,
+                 focal_gamma=2.0, compute_aux=False)
+
+
 class SAM3TrainerNative:
     def __init__(self, config_path, multi_gpu=False):
         with open(config_path, "r") as f:
@@ -888,17 +911,7 @@ class SAM3TrainerNative:
                 use_presence=True,
                 pad_n_queries=200,
             ),
-            Masks(
-                weight_dict={
-                    # Configurable via the optional `loss:` section in the YAML
-                    # config (defaults preserve the original behaviour).
-                    "loss_mask": float(self.config.get("loss", {}).get("loss_mask", 200.0)),
-                    "loss_dice": float(self.config.get("loss", {}).get("loss_dice", 10.0))
-                },
-                focal_alpha=0.25,
-                focal_gamma=2.0,
-                compute_aux=False
-            )
+            _build_mask_loss(self.config.get("loss", {}))
         ]
 
         # Create one-to-many matcher for auxiliary outputs
