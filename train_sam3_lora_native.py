@@ -317,9 +317,14 @@ class COCOSegmentDataset(Dataset):
                 )
                 queries.append(query)
         else:
-            # No annotations: create a single generic query
+            # No annotations (e.g. a crack-free background tile): emit an EMPTY
+            # query for the actual class so the model learns "crack -> nothing"
+            # here. Use the single category name if there is exactly one
+            # (so negative tiles train the "crack" concept, not a generic "object").
+            neg_text = (list(self.categories.values())[0].lower()
+                        if len(self.categories) == 1 else "object")
             query = FindQueryLoaded(
-                query_text="object",
+                query_text=neg_text,
                 image_id=0,
                 object_ids_output=[],
                 is_exhaustive=True,

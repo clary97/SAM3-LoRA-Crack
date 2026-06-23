@@ -40,6 +40,7 @@ All metrics below are on the held-out **test** split (989 images).
 | **v2** | LoRA, stronger Dice (exp #1) | 250 / 30 | epoch 3 | `outputs/crack_lora_v2/` |
 | **v3** | v2 + data augmentation (exp #2) | 250 / 30 | epoch 6 | `outputs/crack_lora_v3/` |
 | **v4** | v2 + tiling of CCSD/LCW (exp #3) | 250 / 30 | epoch 4 | `outputs/crack_lora_v4/` |
+| **v5** | v2 + clDice loss (exp #4) | 250 / 30 + clDice 20 | epoch 6 | `outputs/crack_lora_v5/` |
 
 v4 (exp #3) tiles the high-resolution CCSD and wide-scene LCW images into
 512×512 crops (`prepare_crack_tiles.py` → `crack_tiles/`), keeping only tiles that
@@ -169,6 +170,37 @@ To make tiling pay off, training must include **negative (crack-free) tiles** so
 the model learns to reject background (exp #5 candidate), and/or inference must
 gate background tiles (raise the score threshold, or use an image-level
 crack-presence check before accepting tile predictions).
+
+### clDice loss (v5) + boundary-tolerant / clDice metrics
+
+`crack_losses.py` adds a differentiable centerline-Dice term (`MasksClDice`),
+enabled via `loss_cldice` in the config. `evaluate_pixel_metrics.py --relaxed`
+adds boundary-tolerant (±2 px) Precision/Recall/F1 and a clDice metric.
+
+v2 vs v5 on the test set (threshold 0.3):
+
+| metric | v2 | v5 (+clDice) | Δ |
+|---|---|---|---|
+| strict meanIoU | 0.546 | 0.556 | +0.010 |
+| strict Precision / Recall / F1 | 0.758 / 0.436 / 0.554 | 0.759 / 0.449 / 0.564 | F1 +0.010 |
+| relaxed (±2px) F1 | 0.854 | 0.855 | ~ |
+| clDice | 0.849 | 0.853 | +0.004 |
+
+Per-dataset clDice (v2 → v5): BCL_NonSteel 0.924→0.930, BCL_Steel 0.862→0.879,
+NCCD 0.855→0.881, **CCSD 0.449→0.444 (flat), LCW 0.543→0.498 (worse)**.
+
+**Two findings:**
+1. **clDice helped only marginally on whole images** (F1 +0.01, clDice +0.004),
+   and not at all on CCSD. This confirms the resolution argument: the mask
+   decoder's native output is ~256 px (1008/4), so on whole 1008 images thin
+   cracks are sub-resolution and the skeleton signal is weak. clDice needs higher
+   *effective* resolution (i.e. tiling) to pay off. It did help the close-up
+   datasets (BCL/NCCD) where cracks are larger.
+2. **The relaxed/clDice metrics reframe the whole project.** Strict crack IoU
+   ~0.55 looks low, but at ±2 px tolerance the model scores **F1 ≈ 0.85, clDice
+   ≈ 0.85** overall (BCL ≈ 0.93). The low strict IoU is mostly the metric
+   punishing thin structures for 1-2 px boundary error — not poor detection.
+   **Report strict + relaxed/clDice together.**
 
 ## Conclusions
 

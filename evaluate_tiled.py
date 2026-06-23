@@ -19,7 +19,7 @@ import pycocotools.mask as mask_utils
 from tqdm import tqdm
 
 from compare_lora_base_batch import load_lora_model, predict
-from evaluate_pixel_metrics import source_of, _metrics, union_masks
+from evaluate_pixel_metrics import source_of, _metrics, union_masks, relaxed_and_cldice
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 TILE_SOURCES = {"CCSD", "LCW"}
@@ -73,6 +73,9 @@ def main():
     ap.add_argument("--tile", type=int, default=512)
     ap.add_argument("--stride", type=int, default=384)
     ap.add_argument("--num-samples", type=int, default=None)
+    ap.add_argument("--relaxed", action="store_true",
+                    help="Also report boundary-tolerant P/R/F1 and clDice")
+    ap.add_argument("--tol", type=int, default=2)
     ap.add_argument("--out", default="pixel_metrics_v4_tiled.json")
     args = ap.parse_args()
 
@@ -87,6 +90,7 @@ def main():
     tmp = "/tmp/_eval_tile.jpg"
     tp = fp = fn = 0
     ious = []
+    rel = ([], [], [])
     grp = {}
     for im in tqdm(images, desc="stitched"):
         H, W = im["height"], im["width"]
@@ -100,27 +104,41 @@ def main():
         i_fn = int(np.logical_and(gt, ~pred).sum())
         ious.append(inter / union if union > 0 else 1.0)
         tp += inter; fp += i_fp; fn += i_fn
+        r = relaxed_and_cldice(gt, pred, args.tol) if args.relaxed else None
+        if r:
+            rel[0].append(r[0]); rel[1].append(r[1]); rel[2].append(r[2])
         s = source_of(im["file_name"])
-        g = grp.setdefault(s, [0, 0, 0, []])
+        g = grp.setdefault(s, [0, 0, 0, [], [], [], []])
         g[0] += inter; g[1] += i_fp; g[2] += i_fn; g[3].append(ious[-1])
+        if r:
+            g[4].append(r[0]); g[5].append(r[1]); g[6].append(r[2])
 
-    overall = {"label": "v4_tiled", "threshold": args.threshold, **_metrics(tp, fp, fn, ious, len(images))}
-    overall["by_source"] = {s: _metrics(g[0], g[1], g[2], g[3], len(g[3]))
+    overall = {"label": "v6_tiled", "threshold": args.threshold,
+               **_metrics(tp, fp, fn, ious, len(images), (rel if args.relaxed else None))}
+    overall["by_source"] = {s: _metrics(g[0], g[1], g[2], g[3], len(g[3]),
+                                        ((g[4], g[5], g[6]) if args.relaxed else None))
                             for s, g in sorted(grp.items(), key=lambda kv: -len(kv[1][3]))}
 
     def row(label, m):
-        return (f"{label:13s} {m['images']:5d} {m['mean_per_image_IoU']:8.4f} "
+        base = (f"{label:13s} {m['images']:5d} {m['mean_per_image_IoU']:8.4f} "
                 f"{m['micro_IoU']:9.4f} {m['Precision']:7.4f} {m['Recall']:7.4f} "
                 f"{m['F1']:7.4f} {m['Dice']:7.4f}")
+        if args.relaxed and "relaxed_F1" in m:
+            base += (f"  | {m['relaxed_Precision']:7.4f} {m['relaxed_Recall']:7.4f} "
+                     f"{m['relaxed_F1']:7.4f} {m['clDice']:7.4f}")
+        return base
 
-    print("\n" + "=" * 78)
+    print("\n" + "=" * 96)
     print(f"STITCHED TILED EVAL (test={len(images)}, thr={args.threshold}, tile={args.tile}/{args.stride})")
-    print("=" * 78)
-    print(f"{'group':13s} {'imgs':>5s} {'meanIoU':>8s} {'microIoU':>9s} {'Prec':>7s} {'Recall':>7s} {'F1':>7s} {'Dice':>7s}")
+    print("=" * 96)
+    hdr = f"{'group':13s} {'imgs':>5s} {'meanIoU':>8s} {'microIoU':>9s} {'Prec':>7s} {'Recall':>7s} {'F1':>7s} {'Dice':>7s}"
+    if args.relaxed:
+        hdr += "  | " + f"{'rPrec':>7s} {'rRecall':>7s} {'rF1':>7s} {'clDice':>7s}"
+    print(hdr)
     print(row(overall["label"], overall))
     for s, m in overall["by_source"].items():
         print(row(f"  {s}", m))
-    print("=" * 78)
+    print("=" * 96)
     json.dump([overall], open(args.out, "w"), indent=2)
     print(f"Saved {args.out}")
 

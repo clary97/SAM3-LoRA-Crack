@@ -69,21 +69,39 @@ def tile_positions(length, tile, stride):
     return pos
 
 
-def make_tiles(img, mask, tile, stride, min_pixels, max_tiles):
-    """Return list of (img_crop, mask_crop, crack_px) for positive tiles."""
+def make_tiles(img, mask, tile, stride, min_pixels, max_tiles, neg_per_image=0):
+    """Return (positives, negatives).
+
+    positives: list of (img_crop, mask_crop, crack_px) with crack pixels.
+    negatives: list of img_crop with NO crack (background tiles), capped at
+    neg_per_image. Negatives teach the model to output nothing on background
+    tiles (the fix for v4's precision collapse).
+    """
     H, W = mask.shape
-    out = []
+    pos, neg = [], []
     for y in tile_positions(H, tile, stride):
         for x in tile_positions(W, tile, stride):
             m = mask[y:y + tile, x:x + tile]
             px = int(m.sum())
+            crop = img[y:y + tile, x:x + tile]
             if px >= min_pixels:
-                out.append((img[y:y + tile, x:x + tile], m, px))
-    out.sort(key=lambda t: -t[2])      # densest cracks first
-    return out[:max_tiles]
+                pos.append((crop, m, px))
+            elif px == 0:
+                neg.append(crop)
+    pos.sort(key=lambda t: -t[2])              # densest cracks first
+    pos = pos[:max_tiles]
+    # sample negatives deterministically (evenly spread), balanced to positives
+    if neg_per_image > 0 and neg:
+        k = min(neg_per_image, len(neg), max(1, len(pos)))  # ~1:1 with positives
+        step = max(1, len(neg) // k)
+        neg = neg[::step][:k]
+    else:
+        neg = []
+    return pos, neg
 
 
-def process_split(split, coco_root, out_root, tile, stride, min_pixels, max_tiles):
+def process_split(split, coco_root, out_root, tile, stride, min_pixels, max_tiles,
+                  neg_per_image=0):
     coco = json.load(open(coco_root / split / "_annotations.coco.json"))
     ann_by_img = {}
     for a in coco["annotations"]:
@@ -95,7 +113,7 @@ def process_split(split, coco_root, out_root, tile, stride, min_pixels, max_tile
     out = {"images": [], "annotations": [],
            "categories": [{"id": 1, "name": "crack", "supercategory": "defect"}]}
     iid = aid = 1
-    n_tiled = n_whole = n_tiles = 0
+    n_tiled = n_whole = n_tiles = n_neg = 0
 
     for im in tqdm(coco["images"], desc=f"{split:5s}"):
         fn = im["file_name"]
@@ -127,7 +145,9 @@ def process_split(split, coco_root, out_root, tile, stride, min_pixels, max_tile
             H, W = img.shape[:2]
 
         stem = Path(fn).stem
-        for k, (ic, mc, _) in enumerate(make_tiles(img, full_mask, tile, stride, min_pixels, max_tiles)):
+        positives, negatives = make_tiles(img, full_mask, tile, stride,
+                                          min_pixels, max_tiles, neg_per_image)
+        for k, (ic, mc, _) in enumerate(positives):
             # include the unique image id (iid) so stems shared across
             # sub-folders (e.g. LCW Train/Test both have "260") can't collide
             tile_path = img_dir / f"{src}_{stem}_{iid}_t{k}.jpg"
@@ -141,12 +161,19 @@ def process_split(split, coco_root, out_root, tile, stride, min_pixels, max_tile
                 "bbox": [x0, y0, x1 - x0 + 1, y1 - y0 + 1], "area": int(mc.sum()),
                 "segmentation": rle_of(mc), "iscrowd": 0})
             iid += 1; aid += 1; n_tiles += 1
+        # negative (crack-free) tiles: image entry with NO annotation
+        for k, ic in enumerate(negatives):
+            tile_path = img_dir / f"{src}_{stem}_{iid}_neg{k}.jpg"
+            Image.fromarray(ic).save(tile_path, quality=95)
+            out["images"].append({"id": iid, "file_name": str(tile_path.resolve()),
+                                  "width": ic.shape[1], "height": ic.shape[0]})
+            iid += 1; n_neg += 1
         n_tiled += 1
 
     out_file = out_root / split / "_annotations.coco.json"
     json.dump(out, open(out_file, "w"))
-    print(f"[{split}] whole_images={n_whole}  tiled_images={n_tiled} -> tiles={n_tiles} "
-          f"| total entries={len(out['images'])}  ({out_file})")
+    print(f"[{split}] whole_images={n_whole}  tiled_images={n_tiled} -> pos_tiles={n_tiles} "
+          f"neg_tiles={n_neg} | total entries={len(out['images'])}  ({out_file})")
 
 
 def main():
@@ -158,13 +185,17 @@ def main():
     ap.add_argument("--stride", type=int, default=384)
     ap.add_argument("--min-pixels", type=int, default=20)
     ap.add_argument("--max-tiles", type=int, default=8)
+    ap.add_argument("--neg-per-image", type=int, default=0,
+                    help="Background (crack-free) tiles to keep per tiled image "
+                         "(~1:1 with positives, capped). v6 uses this to fix v4's "
+                         "precision collapse.")
     ap.add_argument("--splits", nargs="+", default=["train", "valid"])
     args = ap.parse_args()
 
     coco_root, out_root = Path(args.coco_root), Path(args.out)
     for split in args.splits:
         process_split(split, coco_root, out_root, args.tile, args.stride,
-                      args.min_pixels, args.max_tiles)
+                      args.min_pixels, args.max_tiles, args.neg_per_image)
     print("\nDone. Set training.data_dir to:", out_root)
     print("Note: evaluate on the FULL-image test set (crack_coco/test) via a stitched eval.")
 
