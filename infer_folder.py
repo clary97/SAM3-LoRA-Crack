@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image, ImageFile
+from PIL import Image, ImageFile, ImageOps
 from tqdm import tqdm
 
 from compare_lora_base_batch import load_lora_model, predict
@@ -27,15 +27,18 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"}
 
 
-def overlay(pil_img, mask, out_path):
-    """Save image with the crack mask drawn in red."""
+def save_sidebyside(pil_img, mask, out_path):
+    """Save [original | overlay] side by side (left original, right prediction)."""
     im = np.array(pil_img.convert("RGB"))
+    ov = im.copy()
     if mask is not None and mask.any():
         if mask.shape != im.shape[:2]:
             mask = np.array(Image.fromarray(mask).resize(
                 (im.shape[1], im.shape[0]), Image.NEAREST)).astype(bool)
-        im[mask] = (0.4 * im[mask] + np.array([0, 0, 255]) * 0.6).astype(np.uint8)
-    Image.fromarray(im).save(out_path, quality=90)
+        ov[mask] = (0.4 * ov[mask] + np.array([0, 0, 255]) * 0.6).astype(np.uint8)
+    gap = np.full((im.shape[0], 8, 3), 255, np.uint8)   # white separator
+    sbs = np.concatenate([im, gap, ov], axis=1)
+    Image.fromarray(sbs).save(out_path, quality=90)
 
 
 def main():
@@ -70,7 +73,7 @@ def main():
         saved = 0
         for p in tqdm(imgs, desc=sub.name):
             try:
-                im = Image.open(p).convert("RGB")
+                im = ImageOps.exif_transpose(Image.open(p)).convert("RGB")  # respect EXIF rotation
             except Exception as e:
                 print(f"skip {p.name}: {e}"); continue
             # downscale long side to --disp
@@ -90,7 +93,7 @@ def main():
             n_with += 1 if count > 0 else 0
             frac_sum += frac
             if saved < args.save_per_folder:
-                overlay(im, union, odir / f"{p.stem}_pred.jpg")
+                save_sidebyside(im, union, odir / f"{p.stem}_cmp.jpg")
                 saved += 1
         n = len(imgs)
         summary[sub.name] = {
